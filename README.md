@@ -75,5 +75,7 @@ Monad 팀의 개발 환경을 표준화하기 위한 `flake.nix` 템플릿 레�
 
 프로젝트 루트에 `flake.nix`가 존재한다면 아래로 개발 환경 진입이 가능합니다.
 
+[Nix 다운로드하기!](https://nixos.org/download/)
+
 ```bash
 nix develop
