@@ -1,2 +1,5 @@
 .DS_Store
+**/.DS_Store
+
+# 업데이트에 따른 버전 고정 무시
 flake.lock
