@@ -11,7 +11,7 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        localVersion = "v0.1.4";
+        localVersion = "v0.1.5";
 
         remoteVersionUrl =
           "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/version";
@@ -87,6 +87,12 @@
 
           cp "$tmp" ./flake.nix
 
+          # Ensure lock doesn't pin old inputs after template update
+          rm -f "./flake.lock" || true
+
+          # Also reset project-scoped zsh cache to avoid stale prompt/plugins after update
+          rm -rf "./.zsh-nix" || true
+
           new_local_ver="$(read_local_version)"
           if [ -z "$new_local_ver" ]; then
             echo "Self-update warning: could not read updated localVersion from flake.nix"
@@ -100,6 +106,8 @@ flake.nix has been UPDATED from remote template
 Before update : $local_ver
 After update  : ''${new_local_ver:-unknown}
 Remote version: $remote_ver
+
+flake.lock and .zsh-nix have been removed to ensure the update applies.
 
 IMPORTANT:
 This shell will now exit. Re-run:
@@ -153,14 +161,15 @@ plugins=(
   zsh-syntax-highlighting
 )
 
-# If oh-my-zsh is missing at shell startup, try bootstrap once.
+unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_PROMPT_MODIFIER CONDA_SHLVL
+unset _CE_CONDA _CE_MAMBA MAMBA_EXE MAMBA_ROOT_PREFIX
+
 if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
   if command -v zsh-omz-bootstrap >/dev/null 2>&1; then
     zsh-omz-bootstrap >/dev/null 2>&1 || true
   fi
 fi
 
-# Only source if it exists.
 if [ -f "$ZSH/oh-my-zsh.sh" ]; then
   source "$ZSH/oh-my-zsh.sh"
 fi
@@ -205,12 +214,14 @@ EOF
               exit 1
             fi
 
+            unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_PROMPT_MODIFIER CONDA_SHLVL
+            unset _CE_CONDA _CE_MAMBA MAMBA_EXE MAMBA_ROOT_PREFIX
+
             export ZDOTDIR="$PWD/.zsh-nix"
             export ZSH="$ZDOTDIR/oh-my-zsh"
 
             zsh-omz-bootstrap
 
-            # Only exec into zsh if oh-my-zsh entrypoint exists (prevents .zshrc source error).
             if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
               echo "oh-my-zsh install failed: missing $ZSH/oh-my-zsh.sh"
               echo "Try: rm -rf .zsh-nix && nix develop"
