@@ -11,75 +11,112 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        localVersion = "v0.1.1";
+        localVersion = "v0.1.2";
 
         remoteVersionUrl =
           "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/version";
         remoteFlakeUrl =
           "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/flake.nix";
 
-        updateScript = pkgs.writeShellScriptBin "web-flake-self-update" ''
-          set -euo pipefail
+          updateScript = pkgs.writeShellScriptBin "web-flake-self-update" ''
+            set -euo pipefail
 
-          if [ "''${UPDATE:-1}" = "0" ]; then
-            exit 0
-          fi
+            if [ "''${UPDATE:-1}" = "0" ]; then
+              exit 0
+            fi
 
-          if ! command -v curl >/dev/null 2>&1; then
-            exit 0
-          fi
+            if ! command -v curl >/dev/null 2>&1; then
+              exit 0
+            fi
 
-          if [ ! -f "./flake.nix" ]; then
-            exit 0
-          fi
+            if [ ! -f "./flake.nix" ]; then
+              exit 0
+            fi
 
-          local_ver="${localVersion}"
-          remote_ver="$(
-            curl -fsSL --max-time 5 "${remoteVersionUrl}" 2>/dev/null \
-              | tr -d "\r" \
-              | head -n 1 \
-              | sed -e 's/[[:space:]]*$//'
-          )"
+            read_local_version() {
+              # Extract first occurrence of: localVersion = "vX.Y.Z";
+              # Outputs empty string if not found.
+              sed -nE 's/^[[:space:]]*localVersion[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ./flake.nix | head -n 1 || true
+            }
 
-          if [ -z "$remote_ver" ]; then
-            exit 0
-          fi
+            read_remote_version_file() {
+              curl -fsSL --max-time 5 "${remoteVersionUrl}" 2>/dev/null \
+                | tr -d "\r" \
+                | head -n 1 \
+                | sed -e 's/[[:space:]]*$//'
+            }
 
-          if [ "$remote_ver" = "$local_ver" ]; then
-            exit 0
-          fi
+            read_version_from_file() {
+              # $1: file path
+              sed -nE 's/^[[:space:]]*localVersion[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$1" | head -n 1 || true
+            }
 
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
+            local_ver="$(read_local_version)"
+            if [ -z "$local_ver" ]; then
+              # Fallback to flake-eval constant if parsing fails
+              local_ver="${localVersion}"
+            fi
 
-          curl -fsSL --max-time 10 "${remoteFlakeUrl}" -o "$tmp"
+            remote_ver="$(read_remote_version_file)"
+            if [ -z "$remote_ver" ]; then
+              exit 0
+            fi
 
-          if ! grep -q 'description' "$tmp"; then
-            echo "Self-update aborted: invalid flake.nix"
-            exit 0
-          fi
+            if [ "$remote_ver" = "$local_ver" ]; then
+              exit 0
+            fi
 
-          cp "$tmp" ./flake.nix
+            tmp="$(mktemp)"
+            trap 'rm -f "$tmp"' EXIT
 
-          cat <<EOF
+            curl -fsSL --max-time 10 "${remoteFlakeUrl}" -o "$tmp"
 
-============================================================
-flake.nix has been UPDATED from remote template
-------------------------------------------------------------
-Local version : $local_ver
-Remote version: $remote_ver
+            if ! grep -q 'description' "$tmp"; then
+              echo "Self-update aborted: invalid flake.nix"
+              exit 0
+            fi
 
-IMPORTANT:
-This shell will now exit. Re-run:
+            remote_flake_ver="$(read_version_from_file "$tmp")"
+            if [ -z "$remote_flake_ver" ]; then
+              echo "Self-update aborted: remote flake has no localVersion field"
+              exit 0
+            fi
 
-  nix develop
+            # Safety check: remote version file and remote flake should match
+            if [ "$remote_flake_ver" != "$remote_ver" ]; then
+              echo "Self-update aborted: version mismatch"
+              echo "version file : $remote_ver"
+              echo "remote flake : $remote_flake_ver"
+              exit 0
+            fi
 
-============================================================
+            cp "$tmp" ./flake.nix
 
-EOF
+            new_local_ver="$(read_local_version)"
+            if [ -z "$new_local_ver" ]; then
+              echo "Self-update warning: could not read updated localVersion from flake.nix"
+            fi
 
-          exit 2
-        '';
+            cat <<EOF
+
+          ============================================================
+          flake.nix has been UPDATED from remote template
+          ------------------------------------------------------------
+          Before update : $local_ver
+          After update  : ''${new_local_ver:-unknown}
+          Remote version: $remote_ver
+
+          IMPORTANT:
+          This shell will now exit. Re-run:
+
+            nix develop
+
+          ============================================================
+
+          EOF
+
+            exit 2
+          '';
 
         node = pkgs.nodejs_20;
 
