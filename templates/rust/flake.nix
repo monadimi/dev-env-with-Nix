@@ -1,40 +1,71 @@
 {
-  description = "Monad devShell: rust";
+  description = "Monad devShell: Rust";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
     flake-utils.url = "github:numtide/flake-utils";
+    fenix.url = "github:nix-community/fenix";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, fenix }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
 
-        localVersion = "v0.1.0";
+        localVersion = "v0.1.1";
 
         remoteVersionUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/rust/version";
+          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/version";
         remoteFlakeUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/rust/flake.nix";
+          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/flake.nix";
 
-        updateScript = pkgs.writeShellScriptBin "flake-self-update" ''
+        updateScript = pkgs.writeShellScriptBin "web-flake-self-update" ''
           set -euo pipefail
-          if [ "''${UPDATE:-1}" = "0" ]; then exit 0; fi
-          if ! command -v curl >/dev/null 2>&1; then exit 0; fi
-          if [ ! -f "./flake.nix" ]; then exit 0; fi
 
-          local_ver="${localVersion}"
-          remote_ver="$(
+          if [ "''${UPDATE:-1}" = "0" ]; then
+            exit 0
+          fi
+
+          if ! command -v curl >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          if [ ! -f "./flake.nix" ]; then
+            exit 0
+          fi
+
+          read_local_version() {
+            sed -nE 's/^[[:space:]]*localVersion[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ./flake.nix | head -n 1 || true
+          }
+
+          read_remote_version_file() {
             curl -fsSL --max-time 5 "${remoteVersionUrl}" 2>/dev/null \
-              | tr -d "\r" | head -n 1 | sed -e 's/[[:space:]]*$//'
-          )"
+              | tr -d "\r" \
+              | head -n 1 \
+              | sed -e 's/[[:space:]]*$//'
+          }
 
-          if [ -z "$remote_ver" ]; then exit 0; fi
-          if [ "$remote_ver" = "$local_ver" ]; then exit 0; fi
+          read_version_from_file() {
+            sed -nE 's/^[[:space:]]*localVersion[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$1" | head -n 1 || true
+          }
+
+          local_ver="$(read_local_version)"
+          if [ -z "$local_ver" ]; then
+            local_ver="${localVersion}"
+          fi
+
+          remote_ver="$(read_remote_version_file)"
+          if [ -z "$remote_ver" ]; then
+            exit 0
+          fi
+
+          if [ "$remote_ver" = "$local_ver" ]; then
+            exit 0
+          fi
 
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
+
           curl -fsSL --max-time 10 "${remoteFlakeUrl}" -o "$tmp"
 
           if ! grep -q 'description' "$tmp"; then
@@ -42,15 +73,38 @@
             exit 0
           fi
 
+          remote_flake_ver="$(read_version_from_file "$tmp")"
+          if [ -z "$remote_flake_ver" ]; then
+            echo "Self-update aborted: remote flake has no localVersion field"
+            exit 0
+          fi
+
+          if [ "$remote_flake_ver" != "$remote_ver" ]; then
+            echo "Self-update aborted: version mismatch"
+            echo "version file : $remote_ver"
+            echo "remote flake : $remote_flake_ver"
+            exit 0
+          fi
+
           cp "$tmp" ./flake.nix
+          rm -f "./flake.lock" || true
+          rm -rf "./.zsh-nix" || true
+
+          new_local_ver="$(read_local_version)"
+          if [ -z "$new_local_ver" ]; then
+            echo "Self-update warning: could not read updated localVersion from flake.nix"
+          fi
 
           cat <<EOF
 
 ============================================================
 flake.nix has been UPDATED from remote template
 ------------------------------------------------------------
-Local version : $local_ver
+Before update : $local_ver
+After update  : ''${new_local_ver:-unknown}
 Remote version: $remote_ver
+
+flake.lock and .zsh-nix have been removed to ensure the update applies.
 
 IMPORTANT:
 This shell will now exit. Re-run:
@@ -60,16 +114,20 @@ This shell will now exit. Re-run:
 ============================================================
 
 EOF
+
           exit 2
         '';
 
         zshBootstrap = pkgs.writeShellScriptBin "zsh-omz-bootstrap" ''
           set -euo pipefail
+
           export ZDOTDIR="''${ZDOTDIR:-$PWD/.zsh-nix}"
           export ZSH="''${ZSH:-$ZDOTDIR/oh-my-zsh}"
+
           mkdir -p "$ZDOTDIR"
 
-          if [ ! -d "$ZSH" ]; then
+          if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
+            rm -rf "$ZSH"
             git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git "$ZSH"
           fi
 
@@ -86,11 +144,11 @@ EOF
               "$PLUGDIR/zsh-syntax-highlighting"
           fi
 
-          if [ ! -f "$ZDOTDIR/.zshrc" ]; then
+          if [ ! -f "$ZDOTDIR/.zshrc" ] || [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
             cat > "$ZDOTDIR/.zshrc" <<'EOF'
 export ZSH="$ZDOTDIR/oh-my-zsh"
 
-ZSH_THEME="robbyrussell"
+ZSH_THEME="agnoster"
 
 plugins=(
   git
@@ -98,7 +156,18 @@ plugins=(
   zsh-syntax-highlighting
 )
 
-source "$ZSH/oh-my-zsh.sh"
+unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_PROMPT_MODIFIER CONDA_SHLVL
+unset _CE_CONDA _CE_MAMBA MAMBA_EXE MAMBA_ROOT_PREFIX
+
+if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
+  if command -v zsh-omz-bootstrap >/dev/null 2>&1; then
+    zsh-omz-bootstrap >/dev/null 2>&1 || true
+  fi
+fi
+
+if [ -f "$ZSH/oh-my-zsh.sh" ]; then
+  source "$ZSH/oh-my-zsh.sh"
+fi
 
 prompt_context() {
   prompt_segment blue default "monad"
@@ -106,25 +175,47 @@ prompt_context() {
 EOF
           fi
         '';
+
+        rustToolchain =
+          fenix.packages.${system}.stable.toolchain.override {
+            targets = [ "wasm32-unknown-unknown" ];
+          };
+
+        node = pkgs.nodejs_20;
       in
       {
         devShells.default = pkgs.mkShell {
-          shell = pkgs.zsh;
-
           packages = [
             pkgs.zsh
             pkgs.git
             pkgs.curl
-            pkgs.jq
-
-            pkgs.rustc
-            pkgs.cargo
-            pkgs.rustfmt
-            pkgs.clippy
-
-            pkgs.openssl
-            pkgs.pkg-config
             pkgs.cacert
+
+            rustToolchain
+            pkgs.cargo-watch
+            pkgs.bacon
+            pkgs.just
+            pkgs.cargo-nextest
+            pkgs.cargo-binstall
+
+            pkgs.trunk
+            pkgs.wasm-bindgen-cli
+            pkgs.wasm-pack
+
+            pkgs.pkg-config
+            pkgs.openssl
+            pkgs.zlib
+
+            pkgs.clang
+            pkgs.lld
+            pkgs.mold
+            pkgs.gnumake
+            pkgs.gcc
+
+            node
+            pkgs.corepack
+            pkgs.jq
+            pkgs.python3
 
             updateScript
             zshBootstrap
@@ -132,26 +223,47 @@ EOF
 
           shellHook = ''
             set -e
-            export NIX_CONFIG="experimental-features = nix-command flakes"
 
-            if ! flake-self-update; then
-              echo
-              echo "NOTICE: flake.nix was updated during shell entry."
-              echo "This shell will now exit. Re-run:"
-              echo
-              echo "  nix develop"
-              echo
+            export NIX_CONFIG="experimental-features = nix-command flakes"
+            export RUST_BACKTRACE="1"
+
+            if command -v corepack >/dev/null 2>&1; then
+              corepack enable >/dev/null 2>&1 || true
+            fi
+
+            if ! web-flake-self-update; then
               exit 1
             fi
 
+            unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_PROMPT_MODIFIER CONDA_SHLVL
+            unset _CE_CONDA _CE_MAMBA MAMBA_EXE MAMBA_ROOT_PREFIX
+
             export ZDOTDIR="$PWD/.zsh-nix"
+            export ZSH="$ZDOTDIR/oh-my-zsh"
+
             zsh-omz-bootstrap
+
+            if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
+              echo "oh-my-zsh install failed: missing $ZSH/oh-my-zsh.sh"
+              echo "Try: rm -rf .zsh-nix && nix develop"
+              exit 1
+            fi
+
+            if [ "''${_MONAD_NIX_ZSH_STARTED:-0}" != "1" ]; then
+              export _MONAD_NIX_ZSH_STARTED=1
+              exec ${pkgs.zsh}/bin/zsh
+            fi
           '';
         };
 
         apps.update-flake = {
           type = "app";
-          program = "${updateScript}/bin/flake-self-update";
+          program = "${updateScript}/bin/web-flake-self-update";
+        };
+
+        apps.bootstrap-zsh = {
+          type = "app";
+          program = "${zshBootstrap}/bin/zsh-omz-bootstrap";
         };
 
         localVersion = localVersion;
