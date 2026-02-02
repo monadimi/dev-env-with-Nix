@@ -1,241 +1,182 @@
-{description = "Monad devShell: infra";
+{
+  description = "infra runner for Rust backend (axum/leptos/dioxus): git pull -> cargo build --release -> run";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
-    flake-utils.url = "github:numtide/flake-utils";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    fenix.url = "github:nix-community/fenix";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
-        rev = self.shortRev or self.rev or "dirty";
+  outputs = { self, nixpkgs, fenix }:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
+    in
+    {
+      packages = forAllSystems (system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+          fenixPkgs = fenix.packages.${system};
 
-        localVersion = "v0.1.1";
+          rustToolchain = fenixPkgs.combine [
+            fenixPkgs.stable.rustc
+            fenixPkgs.stable.cargo
+            fenixPkgs.stable.clippy
+            fenixPkgs.stable.rustfmt
+            fenixPkgs.stable.rust-src
+            fenixPkgs.stable.rust-analyzer
+          ];
 
-        remoteVersionUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/infra/version";
-        remoteFlakeUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/infra/flake.nix";
+          appName = "monad-api";
+          binName = "monad-api";
 
-        updateScript = pkgs.writeShellScriptBin "infra-flake-self-update" ''
-          set -euo pipefail
+          rustRun = pkgs.writeShellApplication {
+            name = "${appName}-run";
+            runtimeInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.git
+              pkgs.cacert
 
-          if [ "''${UPDATE:-1}" = "0" ]; then
-            exit 0
-          fi
+              rustToolchain
 
-          if ! command -v curl >/dev/null 2>&1; then
-            exit 0
-          fi
+              pkgs.pkg-config
+              pkgs.openssl
 
-          if [ ! -f "./flake.nix" ]; then
-            exit 0
-          fi
+              pkgs.clang
+              pkgs.lld
+              pkgs.gnumake
+            ];
+            text = ''
+              set -euo pipefail
 
-          read_local_version() {
-            sed -nE 's/^[[:space:]]*localVersion[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ./flake.nix | head -n 1 || true
-          }
+              REPO_URL="''${REPO_URL:-https://github.com/monadimi/your-rust-repo.git}"
+              BRANCH="''${BRANCH:-main}"
 
-          read_remote_version_file() {
-            curl -fsSL --max-time 5 "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/infra/version" 2>/dev/null               | tr -d "\r"               | head -n 1               | sed -e 's/[[:space:]]*$//'
-          }
+              APP_NAME="''${APP_NAME:-${appName}}"
+              BIN_NAME="''${BIN_NAME:-${binName}}"
 
-          read_version_from_file() {
-            sed -nE 's/^[[:space:]]*localVersion[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$1" | head -n 1 || true
-          }
+              APP_DIR="''${APP_DIR:-/home/monad/apps/$APP_NAME/app}"
+              CACHE_DIR="''${CACHE_DIR:-/var/cache/$APP_NAME}"
+              CARGO_HOME="''${CARGO_HOME:-$CACHE_DIR/cargo-home}"
+              CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$CACHE_DIR/target}"
 
-          local_ver="$(read_local_version)"
-          if [ -z "$local_ver" ]; then
-            local_ver="v0.1.1"
-          fi
+              ENV_FILE="''${ENV_FILE:-/etc/$APP_NAME/$APP_NAME.env}"
 
-          remote_ver="$(read_remote_version_file)"
-          if [ -z "$remote_ver" ]; then
-            exit 0
-          fi
+              export CARGO_HOME
+              export CARGO_TARGET_DIR
 
-          if [ "$remote_ver" = "$local_ver" ]; then
-            exit 0
-          fi
+              mkdir -p "$APP_DIR" "$CACHE_DIR" "$CARGO_HOME" "$CARGO_TARGET_DIR"
 
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
+              if [ ! -d "$APP_DIR/.git" ]; then
+                git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+              else
+                cd "$APP_DIR"
+                git fetch origin "$BRANCH" --depth 1
+                git reset --hard "origin/$BRANCH"
+                git clean -fd
+              fi
 
-          curl -fsSL --max-time 10 "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/infra/flake.nix" -o "$tmp"
+              cd "$APP_DIR"
 
-          if ! grep -q 'description' "$tmp"; then
-            echo "Self-update aborted: invalid flake.nix"
-            exit 0
-          fi
+              if [ -f "$ENV_FILE" ]; then
+                set -a
+                . "$ENV_FILE"
+                set +a
+              fi
 
-          remote_flake_ver="$(read_version_from_file "$tmp")"
-          if [ -z "$remote_flake_ver" ]; then
-            echo "Self-update aborted: remote flake has no localVersion field"
-            exit 0
-          fi
+              if [ -f "Cargo.lock" ]; then
+                cargo build --release --locked
+              else
+                cargo build --release
+              fi
 
-          if [ "$remote_flake_ver" != "$remote_ver" ]; then
-            echo "Self-update aborted: version mismatch"
-            echo "version file : $remote_ver"
-            echo "remote flake : $remote_flake_ver"
-            exit 0
-          fi
+              exec "$CARGO_TARGET_DIR/release/$BIN_NAME"
+            '';
+          };
 
-          cp "$tmp" ./flake.nix
+          installSystemd = pkgs.writeShellApplication {
+            name = "${appName}-install-systemd";
+            runtimeInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.systemd
+              pkgs.nix
+            ];
+            text = ''
+              set -euo pipefail
 
-          new_local_ver="$(read_local_version)"
+              APP_NAME="''${APP_NAME:-${appName}}"
+              USER_NAME="''${USER_NAME:-monad}"
+              GROUP_NAME="''${GROUP_NAME:-monad}"
+              WORKDIR="''${WORKDIR:-/home/$USER_NAME/apps/$APP_NAME}"
 
-          cat <<EOF
+              UNIT_PATH="/etc/systemd/system/$APP_NAME.service"
+              ENV_DIR="/etc/$APP_NAME"
+              ENV_FILE="$ENV_DIR/$APP_NAME.env"
 
-============================================================
-flake.nix has been UPDATED from remote template
-------------------------------------------------------------
-Before update : $local_ver
-After update  : ''${new_local_ver:-unknown}
-Remote version: $remote_ver
+              OUT_LINK="$WORKDIR/nix-$APP_NAME-runner"
 
-IMPORTANT:
-This shell will now exit. Re-run:
+              mkdir -p "$WORKDIR"
+              mkdir -p "$ENV_DIR"
 
-  nix develop
+              if [ ! -f "$ENV_FILE" ]; then
+                cat > "$ENV_FILE" <<EOF
+# export-style env file (bash)
+# Example:
+# PORT=8080
+# RUST_LOG=info
+EOF
+                chmod 600 "$ENV_FILE" || true
+              fi
 
-============================================================
+              nix build ".#${appName}-run" --out-link "$OUT_LINK"
 
+              cat > "$UNIT_PATH" <<EOF
+[Unit]
+Description=$APP_NAME (Rust) - git pull, build, run
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=$USER_NAME
+Group=$GROUP_NAME
+WorkingDirectory=$WORKDIR
+EnvironmentFile=$ENV_FILE
+ExecStart=$OUT_LINK/bin/${appName}-run
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-          exit 2
-        '';
+              systemctl daemon-reload
+              systemctl enable --now "$APP_NAME.service"
 
-        zshBootstrap = pkgs.writeShellScriptBin "zsh-omz-bootstrap" ''
-          set -euo pipefail
+              echo "installed: $UNIT_PATH"
+              echo "env file : $ENV_FILE"
+              echo "status   : systemctl status $APP_NAME.service"
+            '';
+          };
+        in
+        {
+          "${appName}-run" = rustRun;
+          "${appName}-install-systemd" = installSystemd;
+          default = rustRun;
+        }
+      );
 
-          export ZDOTDIR="''${ZDOTDIR:-$PWD/.zsh-nix}"
-          export ZSH="''${ZSH:-$ZDOTDIR/oh-my-zsh}"
-
-          mkdir -p "$ZDOTDIR"
-
-          if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
-            rm -rf "$ZSH"
-            git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git "$ZSH"
-          fi
-
-          PLUGDIR="$ZSH/custom/plugins"
-          mkdir -p "$PLUGDIR"
-
-          if [ ! -d "$PLUGDIR/zsh-autosuggestions" ]; then
-            git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions               "$PLUGDIR/zsh-autosuggestions"
-          fi
-
-          if [ ! -d "$PLUGDIR/zsh-syntax-highlighting" ]; then
-            git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting               "$PLUGDIR/zsh-syntax-highlighting"
-          fi
-
-          if [ ! -f "$ZDOTDIR/.zshrc" ] || [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
-            cat > "$ZDOTDIR/.zshrc" <<'EOF'
-export ZSH="$ZDOTDIR/oh-my-zsh"
-
-ZSH_THEME="agnoster"
-
-plugins=(
-  git
-  zsh-autosuggestions
-  zsh-syntax-highlighting
-)
-
-source "$ZSH/oh-my-zsh.sh"
-
-prompt_context() {
-  prompt_segment blue default "monad"
-}
-EOF
-          fi
-        '';
-
-        commonTools = with pkgs; [
-          git
-          curl
-          jq
-          ripgrep
-          fd
-        ];
-
-        fmtTools = with pkgs; [
-          nixfmt-rfc-style
-          deadnix
-          statix
-          shfmt
-          shellcheck
-        ];
-
-        extraTools = with pkgs; [
-          opentofu
-          ansible
-          kubectl
-          kubernetes-helm
-          kustomize
-          sops
-          age
-          yq-go
-          awscli2
-        ];
-      in {
-        devShells.default = pkgs.mkShell {
-          packages = commonTools ++ fmtTools ++ extraTools ++ [ pkgs.zsh updateScript zshBootstrap ];
-          shellHook = ''
-            set -e
-            export NIX_CONFIG="experimental-features = nix-command flakes"
-            if ! infra-flake-self-update; then
-              echo
-              echo "NOTICE: flake.nix was updated during shell entry."
-              echo "This shell will now exit. Re-run:"
-              echo
-              echo "  nix develop"
-              echo
-              exit 1
-            fi
-            export ZDOTDIR="$PWD/.zsh-nix"
-            zsh-omz-bootstrap
-                        echo "Monad devShell (infra) (${rev})"
-            if [ "''${_MONAD_NIX_ZSH_STARTED:-0}" != "1" ]; then
-              export _MONAD_NIX_ZSH_STARTED=1
-              exec ${pkgs.zsh}/bin/zsh -l
-            fi
-          '';
-
-        };
-        apps.update-flake = {
+      apps = forAllSystems (system: {
+        run = {
           type = "app";
-          program = "${updateScript}/bin/infra-flake-self-update";
+          program = "${self.packages.${system}.${appName}-run}/bin/${appName}-run";
         };
 
-        apps.bootstrap-zsh = {
+        install-systemd = {
           type = "app";
-          program = "${zshBootstrap}/bin/zsh-omz-bootstrap";
+          program = "${self.packages.${system}.${appName}-install-systemd}/bin/${appName}-install-systemd";
         };
-
-        localVersion = localVersion;
-
-        checks = {
-          nixfmt = pkgs.runCommand "check-nixfmt" { } ''
-            set -euo pipefail
-            find ${./.} -type f -name "*.nix" -print0 | xargs -0 ${pkgs.nixfmt-rfc-style}/bin/nixfmt --check
-            touch $out
-          '';
-
-          deadnix = pkgs.runCommand "check-deadnix" { } ''
-            set -euo pipefail
-            ${pkgs.deadnix}/bin/deadnix ${./.}
-            touch $out
-          '';
-
-          statix = pkgs.runCommand "check-statix" { } ''
-            set -euo pipefail
-            ${pkgs.statix}/bin/statix check ${./.}
-            touch $out
-          '';
-        };
-
-        formatter = pkgs.nixfmt-rfc-style;
       });
+    };
 }

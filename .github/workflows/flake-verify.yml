@@ -25,7 +25,6 @@ jobs:
           - embaded
           - flutter
           - infra
-          - react
           - rust
           - base
           - web
