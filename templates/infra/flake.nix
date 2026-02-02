@@ -170,12 +170,12 @@ EOF
       apps = forAllSystems (system: {
         run = {
           type = "app";
-          program = "${self.packages.${system}.${appName}-run}/bin/${appName}-run";
+          program = "${self.packages.${system}."${appName}-run"}/bin/${appName}-run";
         };
 
         install-systemd = {
           type = "app";
-          program = "${self.packages.${system}.${appName}-install-systemd}/bin/${appName}-install-systemd";
+          program = "${self.packages.${system}."${appName}-install-systemd"}/bin/${appName}-install-systemd";
         };
       });
     };
