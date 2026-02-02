@@ -15,9 +15,9 @@
         localVersion = "v0.1.2";
 
         remoteVersionUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/version";
+          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/rust/version";
         remoteFlakeUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/flake.nix";
+          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/rust/flake.nix";
 
         updateScript = pkgs.writeShellScriptBin "web-flake-self-update" ''
           set -euo pipefail
