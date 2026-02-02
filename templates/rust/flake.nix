@@ -12,7 +12,7 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        localVersion = "v0.1.1";
+        localVersion = "v0.1.2";
 
         remoteVersionUrl =
           "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/version";

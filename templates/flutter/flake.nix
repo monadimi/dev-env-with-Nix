@@ -12,11 +12,12 @@
         pkgs = import nixpkgs {
           inherit system;
           config = {
+            allowUnfree = true;
             android_sdk.accept_license = true;
           };
         };
 
-        localVersion = "v0.1.5";
+        localVersion = "v0.1.2";
 
         remoteVersionUrl =
           "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/flutter/version";
