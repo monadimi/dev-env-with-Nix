@@ -1,5 +1,5 @@
 {
-  description = "infra runner for Rust backend (axum/leptos/dioxus): git pull -> cargo build --release -> run";
+  description = "infra runner for Rust backend: git pull -> cargo build --release -> run";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -10,6 +10,9 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
+
+      appName = "test";
+      binName = "test";
     in
     {
       packages = forAllSystems (system:
@@ -25,9 +28,6 @@
             fenixPkgs.stable.rust-src
             fenixPkgs.stable.rust-analyzer
           ];
-
-          appName = "monad-api";
-          binName = "monad-api";
 
           rustRun = pkgs.writeShellApplication {
             name = "${appName}-run";

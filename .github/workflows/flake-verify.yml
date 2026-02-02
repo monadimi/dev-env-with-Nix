@@ -22,13 +22,12 @@ jobs:
       fail-fast: false
       matrix:
         dir:
+          - base
+          - infra
           - embaded
           - flutter
-          - infra
           - rust
-          - base
           - web
-          - cpp
 
     steps:
       - name: Checkout

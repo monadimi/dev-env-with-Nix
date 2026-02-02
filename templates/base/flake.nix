@@ -11,14 +11,14 @@
       let
         pkgs = import nixpkgs { inherit system; };
 
-        localVersion = "v0.1.0";
+        localVersion = "v0.1.5";
 
         remoteVersionUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/base/version";
+          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/version";
         remoteFlakeUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/base/flake.nix";
+          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/web/flake.nix";
 
-        updateScript = pkgs.writeShellScriptBin "monad-flake-self-update" ''
+        updateScript = pkgs.writeShellScriptBin "web-flake-self-update" ''
           set -euo pipefail
 
           if [ "''${UPDATE:-1}" = "0" ]; then
@@ -87,7 +87,16 @@
 
           cp "$tmp" ./flake.nix
 
+          # Ensure lock doesn't pin old inputs after template update
+          rm -f "./flake.lock" || true
+
+          # Also reset project-scoped zsh cache to avoid stale prompt/plugins after update
+          rm -rf "./.zsh-nix" || true
+
           new_local_ver="$(read_local_version)"
+          if [ -z "$new_local_ver" ]; then
+            echo "Self-update warning: could not read updated localVersion from flake.nix"
+          fi
 
           cat <<EOF
 
@@ -97,6 +106,8 @@ flake.nix has been UPDATED from remote template
 Before update : $local_ver
 After update  : ''${new_local_ver:-unknown}
 Remote version: $remote_ver
+
+flake.lock and .zsh-nix have been removed to ensure the update applies.
 
 IMPORTANT:
 This shell will now exit. Re-run:
@@ -109,6 +120,7 @@ EOF
 
           exit 2
         '';
+
 
         zshBootstrap = pkgs.writeShellScriptBin "zsh-omz-bootstrap" ''
           set -euo pipefail
@@ -148,7 +160,18 @@ plugins=(
   zsh-syntax-highlighting
 )
 
-source "$ZSH/oh-my-zsh.sh"
+unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_PROMPT_MODIFIER CONDA_SHLVL
+unset _CE_CONDA _CE_MAMBA MAMBA_EXE MAMBA_ROOT_PREFIX
+
+if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
+  if command -v zsh-omz-bootstrap >/dev/null 2>&1; then
+    zsh-omz-bootstrap >/dev/null 2>&1 || true
+  fi
+fi
+
+if [ -f "$ZSH/oh-my-zsh.sh" ]; then
+  source "$ZSH/oh-my-zsh.sh"
+fi
 
 prompt_context() {
   prompt_segment blue default "monad"
@@ -163,13 +186,14 @@ EOF
             pkgs.zsh
             pkgs.git
             pkgs.curl
-            pkgs.jq
 
-            pkgs.openssl
-            pkgs.cacert
+            pkgs.corepack
+            pkgs.jq
+            pkgs.python3
             pkgs.pkg-config
             pkgs.gcc
             pkgs.gnumake
+            pkgs.cacert
 
             updateScript
             zshBootstrap
@@ -177,31 +201,41 @@ EOF
 
           shellHook = ''
             set -e
+
             export NIX_CONFIG="experimental-features = nix-command flakes"
 
-            if ! monad-flake-self-update; then
-              echo
-              echo "NOTICE: flake.nix was updated during shell entry."
-              echo "This shell will now exit. Re-run:"
-              echo
-              echo "  nix develop"
-              echo
+            if command -v corepack >/dev/null 2>&1; then
+              corepack enable >/dev/null 2>&1 || true
+            fi
+
+            if ! web-flake-self-update; then
               exit 1
             fi
 
+            unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_PROMPT_MODIFIER CONDA_SHLVL
+            unset _CE_CONDA _CE_MAMBA MAMBA_EXE MAMBA_ROOT_PREFIX
+
             export ZDOTDIR="$PWD/.zsh-nix"
+            export ZSH="$ZDOTDIR/oh-my-zsh"
+
             zsh-omz-bootstrap
+
+            if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
+              echo "oh-my-zsh install failed: missing $ZSH/oh-my-zsh.sh"
+              echo "Try: rm -rf .zsh-nix && nix develop"
+              exit 1
+            fi
 
             if [ "''${_MONAD_NIX_ZSH_STARTED:-0}" != "1" ]; then
               export _MONAD_NIX_ZSH_STARTED=1
-              exec ${pkgs.zsh}/bin/zsh -l
+              exec ${pkgs.zsh}/bin/zsh
             fi
           '';
         };
 
         apps.update-flake = {
           type = "app";
-          program = "${updateScript}/bin/monad-flake-self-update";
+          program = "${updateScript}/bin/web-flake-self-update";
         };
 
         apps.bootstrap-zsh = {

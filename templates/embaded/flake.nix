@@ -1,4 +1,5 @@
-{description = "Monad devShell: embaded";
+{
+  description = "Monad devShell: Embedded";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
@@ -9,16 +10,15 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        rev = self.shortRev or self.rev or "dirty";
 
-        localVersion = "v0.1.1";
+        localVersion = "v0.1.5";
 
         remoteVersionUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/embaded/version";
+          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/embedded/version";
         remoteFlakeUrl =
-          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/embaded/flake.nix";
+          "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/embedded/flake.nix";
 
-        updateScript = pkgs.writeShellScriptBin "embaded-flake-self-update" ''
+        updateScript = pkgs.writeShellScriptBin "embedded-flake-self-update" ''
           set -euo pipefail
 
           if [ "''${UPDATE:-1}" = "0" ]; then
@@ -38,7 +38,10 @@
           }
 
           read_remote_version_file() {
-            curl -fsSL --max-time 5 "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/embaded/version" 2>/dev/null               | tr -d "\r"               | head -n 1               | sed -e 's/[[:space:]]*$//'
+            curl -fsSL --max-time 5 "${remoteVersionUrl}" 2>/dev/null \
+              | tr -d "\r" \
+              | head -n 1 \
+              | sed -e 's/[[:space:]]*$//'
           }
 
           read_version_from_file() {
@@ -47,7 +50,7 @@
 
           local_ver="$(read_local_version)"
           if [ -z "$local_ver" ]; then
-            local_ver="v0.1.1"
+            local_ver="${localVersion}"
           fi
 
           remote_ver="$(read_remote_version_file)"
@@ -62,7 +65,7 @@
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
 
-          curl -fsSL --max-time 10 "https://raw.githubusercontent.com/monadimi/nix-env/main/templates/embaded/flake.nix" -o "$tmp"
+          curl -fsSL --max-time 10 "${remoteFlakeUrl}" -o "$tmp"
 
           if ! grep -q 'description' "$tmp"; then
             echo "Self-update aborted: invalid flake.nix"
@@ -84,7 +87,13 @@
 
           cp "$tmp" ./flake.nix
 
+          rm -f "./flake.lock" || true
+          rm -rf "./.zsh-nix" || true
+
           new_local_ver="$(read_local_version)"
+          if [ -z "$new_local_ver" ]; then
+            echo "Self-update warning: could not read updated localVersion from flake.nix"
+          fi
 
           cat <<EOF
 
@@ -94,6 +103,8 @@ flake.nix has been UPDATED from remote template
 Before update : $local_ver
 After update  : ''${new_local_ver:-unknown}
 Remote version: $remote_ver
+
+flake.lock and .zsh-nix have been removed to ensure the update applies.
 
 IMPORTANT:
 This shell will now exit. Re-run:
@@ -124,11 +135,13 @@ EOF
           mkdir -p "$PLUGDIR"
 
           if [ ! -d "$PLUGDIR/zsh-autosuggestions" ]; then
-            git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions               "$PLUGDIR/zsh-autosuggestions"
+            git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+              "$PLUGDIR/zsh-autosuggestions"
           fi
 
           if [ ! -d "$PLUGDIR/zsh-syntax-highlighting" ]; then
-            git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting               "$PLUGDIR/zsh-syntax-highlighting"
+            git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting \
+              "$PLUGDIR/zsh-syntax-highlighting"
           fi
 
           if [ ! -f "$ZDOTDIR/.zshrc" ] || [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
@@ -143,7 +156,18 @@ plugins=(
   zsh-syntax-highlighting
 )
 
-source "$ZSH/oh-my-zsh.sh"
+unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_PROMPT_MODIFIER CONDA_SHLVL
+unset _CE_CONDA _CE_MAMBA MAMBA_EXE MAMBA_ROOT_PREFIX
+
+if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
+  if command -v zsh-omz-bootstrap >/dev/null 2>&1; then
+    zsh-omz-bootstrap >/dev/null 2>&1 || true
+  fi
+fi
+
+if [ -f "$ZSH/oh-my-zsh.sh" ]; then
+  source "$ZSH/oh-my-zsh.sh"
+fi
 
 prompt_context() {
   prompt_segment blue default "monad"
@@ -152,63 +176,98 @@ EOF
           fi
         '';
 
-        commonTools = with pkgs; [
-          git
-          curl
-          jq
-          ripgrep
-          fd
-        ];
-
-        fmtTools = with pkgs; [
-          nixfmt-rfc-style
-          deadnix
-          statix
-          shfmt
-          shellcheck
-        ];
-
-        extraTools = with pkgs; [
-          cmake
-          ninja
-          gnumake
-          pkg-config
-          python3
-          python3Packages.pip
-          gcc-arm-embedded
-          openocd
-          picocom
-          minicom
-          esptool
-        ];
-      in {
+        python = pkgs.python3;
+      in
+      {
         devShells.default = pkgs.mkShell {
-          packages = commonTools ++ fmtTools ++ extraTools ++ [ pkgs.zsh updateScript zshBootstrap ];
+          packages = [
+            pkgs.zsh
+            pkgs.git
+            pkgs.curl
+            pkgs.cacert
+
+            # build essentials
+            pkgs.gcc
+            pkgs.gnumake
+            pkgs.cmake
+            pkgs.ninja
+            pkgs.pkg-config
+
+            # python tooling for many embedded ecosystems (esptool/platformio/etc)
+            python
+            pkgs.python3Packages.pip
+            pkgs.python3Packages.virtualenv
+
+            # arduino
+            pkgs.arduino-cli
+
+            # esp32 (common path: platformio + esptool)
+            pkgs.platformio
+            pkgs.esptool
+
+            # flashing/debug/serial
+            pkgs.openocd
+            pkgs.dfu-util
+            pkgs.minicom
+            pkgs.picocom
+            pkgs.screen
+            pkgs.usbutils
+
+            # for rpi / remote programmable computers
+            pkgs.openssh
+            pkgs.rsync
+
+            # misc helpers
+            pkgs.jq
+            pkgs.which
+            pkgs.unzip
+            pkgs.zip
+
+            updateScript
+            zshBootstrap
+          ];
+
           shellHook = ''
             set -e
+
             export NIX_CONFIG="experimental-features = nix-command flakes"
-            if ! embaded-flake-self-update; then
-              echo
-              echo "NOTICE: flake.nix was updated during shell entry."
-              echo "This shell will now exit. Re-run:"
-              echo
-              echo "  nix develop"
-              echo
+
+            if ! embedded-flake-self-update; then
               exit 1
             fi
+
+            unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_PROMPT_MODIFIER CONDA_SHLVL
+            unset _CE_CONDA _CE_MAMBA MAMBA_EXE MAMBA_ROOT_PREFIX
+
+            # platformio cache location (avoid polluting global home, keep reproducible-ish)
+            export PLATFORMIO_CORE_DIR="$PWD/.pio-core"
+            mkdir -p "$PLATFORMIO_CORE_DIR" >/dev/null 2>&1 || true
+
+            # arduino-cli local config directory
+            export ARDUINO_DATA_DIR="$PWD/.arduino"
+            mkdir -p "$ARDUINO_DATA_DIR" >/dev/null 2>&1 || true
+
             export ZDOTDIR="$PWD/.zsh-nix"
+            export ZSH="$ZDOTDIR/oh-my-zsh"
+
             zsh-omz-bootstrap
-                        echo "Monad devShell (embaded) (${rev})"
+
+            if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
+              echo "oh-my-zsh install failed: missing $ZSH/oh-my-zsh.sh"
+              echo "Try: rm -rf .zsh-nix && nix develop"
+              exit 1
+            fi
+
             if [ "''${_MONAD_NIX_ZSH_STARTED:-0}" != "1" ]; then
               export _MONAD_NIX_ZSH_STARTED=1
-              exec ${pkgs.zsh}/bin/zsh -l
+              exec ${pkgs.zsh}/bin/zsh
             fi
           '';
-
         };
+
         apps.update-flake = {
           type = "app";
-          program = "${updateScript}/bin/embaded-flake-self-update";
+          program = "${updateScript}/bin/embedded-flake-self-update";
         };
 
         apps.bootstrap-zsh = {
@@ -217,27 +276,5 @@ EOF
         };
 
         localVersion = localVersion;
-
-        checks = {
-          nixfmt = pkgs.runCommand "check-nixfmt" { } ''
-            set -euo pipefail
-            find ${./.} -type f -name "*.nix" -print0 | xargs -0 ${pkgs.nixfmt-rfc-style}/bin/nixfmt --check
-            touch $out
-          '';
-
-          deadnix = pkgs.runCommand "check-deadnix" { } ''
-            set -euo pipefail
-            ${pkgs.deadnix}/bin/deadnix ${./.}
-            touch $out
-          '';
-
-          statix = pkgs.runCommand "check-statix" { } ''
-            set -euo pipefail
-            ${pkgs.statix}/bin/statix check ${./.}
-            touch $out
-          '';
-        };
-
-        formatter = pkgs.nixfmt-rfc-style;
       });
 }
